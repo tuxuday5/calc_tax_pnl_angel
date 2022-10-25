@@ -4,10 +4,39 @@ import datetime
 import pprint
 import re
 import locale
+import argparse
 
-in_file='/home/uday/Downloads/Equity_Transaction_till_140722.csv'
-in_file='/home/uday/lang/python/tax_pnl_calc/tst1.csv'
-out_file='/home/uday/lang/python/tax_pnl_calc/tax_pnl.csv'
+class ValidateFinYear(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        f_y = values
+        f_y_split = f_y.split('-')
+
+        if len(f_y_split) != 2:
+            raise ValueError(f"Financial Year improper argument {f_y}")
+
+        if (int(f_y_split[0]) < 2000) and (int(f_y_split[0]) < 2050):
+            raise ValueError(f"Financial Year improper argument {f_y}")
+
+        if (int(f_y_split[1]) < 2000) and (int(f_y_split[1]) < 2050):
+            raise ValueError(f"Financial Year improper argument {f_y}")
+
+        setattr(namespace,'start_date',datetime.date(int(f_y_split[0]),4,1))
+        setattr(namespace,'end_date',datetime.date(int(f_y_split[1]),3,31))
+
+
+argParser = argparse.ArgumentParser(description='Calculate Angel Broking pnl based on trades')
+argParser.add_argument('-t','--trades-file',dest='in_file',type=str,required=True,help='Trades file')
+argParser.add_argument('-p','--pnl-file',dest='out_file',type=str,required=True,help='Out/Pnl file')
+argParser.add_argument('-y','--fin-year',action=ValidateFinYear,required=True,help='Financial Year as YYYY-YYYYY')
+
+parsedArgs = vars(argParser.parse_args())
+
+
+#in_file='/home/uday/Downloads/Equity_Transaction_till_140722.csv'
+#in_file='/home/uday/lang/python/tax_pnl_calc/tst1.csv'
+#out_file='/home/uday/lang/python/tax_pnl_calc/tax_pnl.csv'
+in_file = parsedArgs['in_file']
+out_file = parsedArgs['out_file']
 #map_file= '/home/uday/Downloads/EQUITY_L.csv'
 #map_fields = [ "SYMBOL", "NAME OF COMPANY", "SERIES", "DATE OF LISTING", "PAID UP VALUE", "MARKET LOT", "ISIN NUMBER", "FACE VALUE" ]
 
@@ -27,12 +56,15 @@ sells_till_start_of_period = {}
 cax = []
 cax_not_divs = []
 pnl  = []
+#
+#start_date =  datetime.date(2020,4,1)
+#end_date = datetime.date(2021,3,31)
+#
+#start_date =  datetime.date(2021,4,1)
+#end_date = datetime.date(2022,3,31)
 
-start_date =  datetime.date(2020,4,1)
-end_date = datetime.date(2021,3,31)
-
-start_date =  datetime.date(2021,4,1)
-end_date = datetime.date(2022,3,31)
+start_date = parsedArgs['start_date']
+end_date = parsedArgs['end_date']
 
 def ShouldIgnore(r):
     return False
