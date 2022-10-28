@@ -6,6 +6,10 @@ import re
 import locale
 import argparse
 
+locale.setlocale(locale.LC_ALL, 'en_IN')
+TRANSACTION_CHARGES_DEFAULT_PERCENT = 0.00345
+DEFAULT_TT = 'BUY'
+
 class ValidateFinYear(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         f_y = values
@@ -41,8 +45,6 @@ out_file = parsedArgs['out_file']
 #map_fields = [ "SYMBOL", "NAME OF COMPANY", "SERIES", "DATE OF LISTING", "PAID UP VALUE", "MARKET LOT", "ISIN NUMBER", "FACE VALUE" ]
 
 #setlocale(locale.LC_NUMERIC,'')
-locale.setlocale(locale.LC_ALL, 'en_IN')
-OTHER_CHARGES_PERCENTAGE = 0.0015
 in_fields = [ "company", "date", "exchange", "type", "price", "qty", "brokerage", "other_chrg", "investment", "mode", "broker" ]
 in_float_fields = [ "price", "brokerage", "other_chrg", "investment" ]
 in_int_fields = [ "qty" ]
@@ -66,6 +68,100 @@ pnl  = []
 start_date = parsedArgs['start_date']
 end_date = parsedArgs['end_date']
 
+def IsBuy(x):
+    return x == 'buy'
+
+def IsSell(x):
+    return x == 'sell'
+
+def IsDelivery(x):
+    return x == 'delivery'
+
+def IsCax(x):
+    return x == 'ca'
+
+def IsBse(x):
+    return x == 'bse'
+
+def IsNse(x):
+    return x == 'nse'
+
+def Gst(brokerage,exch_trans_charges,sebi_to_fees):
+    ## gst 18%
+    taxable_value = round(brokerage+exch_trans_charges+sebi_to_fees,2)
+    return round(taxable_value*0.18,2)
+
+def StampDuty(q,p,trd_type,exch):
+    ### only on buy side
+    ## Equity Delivery 0.015% (Rs 1500 per crore)
+    ## Equity Intraday 0.003% (Rs 300 per crore)
+    ## Futures (equity and commodity) 0.002% (Rs 200 per crore)
+    ## Options (equity and commodity) 0.003% (Rs 300 per crore)
+    ## Currency (F&O) 0.0001% (Rs 10 per crore) on buy-side
+    ## Mutual Fund 0.005% (Rs 500 per crore)
+
+    #if not IsBuy(trd_type):
+    #    return 0
+
+    turn_over = q * p
+    return round(turn_over * 0.00015)
+
+def ExchTransactionCharges(q,p,trd_type,exch):
+    ## nse 0.00335 % of turn over
+    ### bse 0.00345 % of turn over for a,b segment
+    ### bse 0.00275 % of turn over for E, F, FC, G, GC, I, IF, IT, M, MS, MT, T, TS, W
+    ### bse 0.1% of turn over for XC, XD, XT, Z, ZP
+    ### bse 1% of turn over for P, R, SS, ST
+
+    turn_over = q * p
+    charges = 0.0
+    if IsBse(exch):
+        charges = turn_over * 0.0000345
+    elif IsNse(exch):
+        charges = turn_over * 0.0000335
+    else:
+        print(f"Exch {exch} not handled for ExchTransactionCharges. {TRANSACTION_CHARGES_DEFAULT_PERCENT}% used")
+        charges = turn_over * TRANSACTION_CHARGES_DEFAULT_PERCENT
+
+    return round(charges,2)
+
+def Stt(q,p,trd_type,exch):
+    ### 0.1% of turn over
+    turn_over = q * p
+    return round(turn_over * 0.001)
+
+
+def SebiTrunOverFees(q,p,trd_type,exch):
+    # .0001 paise for every 100 rupees
+    # or 10 rs / crore
+    turn_over = q * p
+    hunds_in_turn_over = turn_over/100.0
+    sebi_fees_in_paise = hunds_in_turn_over * 0.0001
+
+    return round(sebi_fees_in_paise,2)
+
+def BrokerageCharges(q,p,trd_type,exch):
+    ## 15 paise/100 rupees
+    p_s_brokerage_charges = p * 0.0015
+    return round(p_s_brokerage_charges*q,2)
+
+def DematTxCharges(q,p,trd_type,exch):
+    # flat 20 + gst @ 18
+    if IsBuy(trd_type):
+        return 0
+    return round(20*1.18,2)
+
+def CalculateOtherCharges(q,p,trd_type,exch):
+    brokerage = BrokerageCharges(q,p,trd_type,exch)
+    stt = Stt(q,p,trd_type,exch)
+    exch_trans_charges = ExchTransactionCharges(q,p,trd_type,exch)
+    sebi_fees = SebiTrunOverFees(q,p,trd_type,exch)
+    stamp_duty = StampDuty(q,p,trd_type,exch)
+    gst = Gst(brokerage,exch_trans_charges,sebi_fees)
+    demat_tx_charges = DematTxCharges(q,p,trd_type,exch)
+
+    return round(brokerage+stt+exch_trans_charges+sebi_fees+stamp_duty+gst+demat_tx_charges,2)
+
 def ShouldIgnore(r):
     return False
 
@@ -84,6 +180,24 @@ def NormalizeRecord(r):
         r['type'] = 'buy'
     elif re.match('sell',r['type'],re.I):
         r['type'] = 'sell'
+
+    if re.match('delivery',r['mode'],re.I):
+        r['mode'] = 'delivery'
+    elif re.match('ca',r['mode'],re.I):
+        r['mode'] = 'ca'
+    elif re.match('intraday',r['mode'],re.I):
+        r['mode'] = 'intraday'
+    else:
+        print(f"Unknown trade mode :{r['mode']}: for record")
+
+    if re.match('nse',r['exchange'],re.I):
+        r['exchange'] = 'nse'
+    elif re.match('bse',r['exchange'],re.I):
+        r['exchange'] = 'bse'
+    elif IsCax(r['mode']) and (r['exchange'] == ''):
+        pass
+    else:
+        print(f"Unknown exchange :{r['exchange']}: for record")
 
 
 def SumAllSells(s):
@@ -153,13 +267,15 @@ def CalculatePnlForScripSells(s_prev,s,b):
             pnl_record['s_date'] = a_sell['date']
             pnl_record['s_price'] = a_sell['price']
             pnl_record['s_qty'] = out_qty
-            pnl_record['s_other_chrg'] = a_sell['price'] * out_qty * OTHER_CHARGES_PERCENTAGE
+            #pnl_record['s_other_chrg'] = a_sell['price'] * out_qty * OTHER_CHARGES_PERCENTAGE
+            pnl_record['s_other_chrg'] = CalculateOtherCharges(out_qty,a_sell['price'],a_sell['type'],a_sell['exchange'])
             pnl_record['s_value']      = (a_sell['price'] * out_qty) - pnl_record['s_other_chrg']
 
             pnl_record['b_date'] = a_buy['date']
             pnl_record['b_qty'] = out_qty
             pnl_record['b_price'] = a_buy['price']
-            pnl_record['b_other_chrg'] = a_buy['price'] * out_qty * OTHER_CHARGES_PERCENTAGE
+            #pnl_record['b_other_chrg'] = a_buy['price'] * out_qty * OTHER_CHARGES_PERCENTAGE
+            pnl_record['b_other_chrg'] = CalculateOtherCharges(out_qty,a_buy['price'],a_buy['type'],a_buy['exchange'])
             pnl_record['b_value']      = (a_buy['price'] * out_qty) + pnl_record['b_other_chrg']
             pnl_record['pnl']          = pnl_record['s_value'] - pnl_record['b_value']
 
@@ -193,13 +309,13 @@ with open(in_file) as trade_history, open(out_file,'w') as pnl_file:
 
         scrip = record['company']
 
-        if record['mode'] == 'Delivery': ## trades
-            if record['type'] == 'buy':
+        if IsDelivery(record['mode']):
+            if IsBuy(record['type']):
                 if scrip not in scrip_wise_buys:
                     scrip_wise_buys[scrip] = []
 
                 scrip_wise_buys[scrip].append(record)
-            elif record['type'] == 'sell':
+            elif IsSell(record['type']):
                 if scrip not in sells_till_start_of_period:
                     sells_till_start_of_period[scrip] = []
                 if scrip not in sells_of_interest:
@@ -209,7 +325,7 @@ with open(in_file) as trade_history, open(out_file,'w') as pnl_file:
                     sells_till_start_of_period[scrip].append(record)
                 elif record['date']  >= start_date and record['date']  <= end_date:
                     sells_of_interest[scrip].append(record)
-        elif record['mode'] == 'CA': ## cax
+        elif IsCax(record['mode']): # cax
             if record['date']  >= start_date and record['date']  <= end_date:
                 if record['price'] == 0  and record['qty'] == 0: ## not rights or swaps
                     cax.append(record)
