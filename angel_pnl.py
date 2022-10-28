@@ -9,6 +9,15 @@ import argparse
 locale.setlocale(locale.LC_ALL, 'en_IN')
 TRANSACTION_CHARGES_DEFAULT_PERCENT = 0.00345
 DEFAULT_TT = 'BUY'
+LTCG = 'LTCG'
+STCG = 'STCG'
+
+IN_FIELDS = [ 'company', 'date', 'exchange', 'type', 'price', 'qty', 'brokerage', 'other_chrg', 'investment', 'mode', 'broker' ]
+IN_FLOAT_FIELDS = [ 'price', 'brokerage', 'other_chrg', 'investment' ]
+IN_INT_FIELDS = [ 'qty' ]
+IN_DATE_FIELDS = [ 'date' ]
+
+PNL_FIELDS  = [ 'company', 'gain_type', 'quarter', 's_date', 'b_date', 's_qty', 's_price', 's_other_chrg', 's_value', 'b_qty', 'b_price', 'b_other_chrg', 'b_value','pnl' ]
 
 class ValidateFinYear(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
@@ -24,6 +33,9 @@ class ValidateFinYear(argparse.Action):
         if (int(f_y_split[1]) < 2000) and (int(f_y_split[1]) < 2050):
             raise ValueError(f"Financial Year improper argument {f_y}")
 
+        if (int(f_y_split[0])+1 != int(f_y_split[1])):
+            raise ValueError(f"Financial Year improper argument {f_y}")
+
         setattr(namespace,'start_date',datetime.date(int(f_y_split[0]),4,1))
         setattr(namespace,'end_date',datetime.date(int(f_y_split[1]),3,31))
 
@@ -32,41 +44,18 @@ argParser = argparse.ArgumentParser(description='Calculate Angel Broking pnl bas
 argParser.add_argument('-t','--trades-file',dest='in_file',type=str,required=True,help='Trades file')
 argParser.add_argument('-p','--pnl-file',dest='out_file',type=str,required=True,help='Out/Pnl file')
 argParser.add_argument('-y','--fin-year',action=ValidateFinYear,required=True,help='Financial Year as YYYY-YYYYY')
-
-parsedArgs = vars(argParser.parse_args())
-
-
 #in_file='/home/uday/Downloads/Equity_Transaction_till_140722.csv'
 #in_file='/home/uday/lang/python/tax_pnl_calc/tst1.csv'
 #out_file='/home/uday/lang/python/tax_pnl_calc/tax_pnl.csv'
-in_file = parsedArgs['in_file']
-out_file = parsedArgs['out_file']
 #map_file= '/home/uday/Downloads/EQUITY_L.csv'
 #map_fields = [ "SYMBOL", "NAME OF COMPANY", "SERIES", "DATE OF LISTING", "PAID UP VALUE", "MARKET LOT", "ISIN NUMBER", "FACE VALUE" ]
 
-#setlocale(locale.LC_NUMERIC,'')
-in_fields = [ "company", "date", "exchange", "type", "price", "qty", "brokerage", "other_chrg", "investment", "mode", "broker" ]
-in_float_fields = [ "price", "brokerage", "other_chrg", "investment" ]
-in_int_fields = [ "qty" ]
-in_date_fields = [ "date" ]
+parsedArgs = vars(argParser.parse_args())
+IN_FILE = parsedArgs['in_file']
+OUT_FILE = parsedArgs['out_file']
+START_DATE = parsedArgs['start_date']
+END_DATE = parsedArgs['end_date']
 
-pnl_fields  = [ "company",  "s_date", "s_qty", "s_price", "s_other_chrg", "s_value", "b_date", "b_qty", "b_price", "b_other_chrg", "b_value","pnl" ]
-
-scrip_wise_buys = {}
-sells_of_interest = {}
-sells_till_start_of_period = {}
-cax = []
-cax_not_divs = []
-pnl  = []
-#
-#start_date =  datetime.date(2020,4,1)
-#end_date = datetime.date(2021,3,31)
-#
-#start_date =  datetime.date(2021,4,1)
-#end_date = datetime.date(2022,3,31)
-
-start_date = parsedArgs['start_date']
-end_date = parsedArgs['end_date']
 
 def IsBuy(x):
     return x == 'buy'
@@ -92,7 +81,7 @@ def Gst(brokerage,exch_trans_charges,sebi_to_fees):
     return round(taxable_value*0.18,2)
 
 def StampDuty(q,p,trd_type,exch):
-    ### only on buy side
+    ### only on buy side(?)
     ## Equity Delivery 0.015% (Rs 1500 per crore)
     ## Equity Intraday 0.003% (Rs 300 per crore)
     ## Futures (equity and commodity) 0.002% (Rs 200 per crore)
@@ -162,18 +151,45 @@ def CalculateOtherCharges(q,p,trd_type,exch):
 
     return round(brokerage+stt+exch_trans_charges+sebi_fees+stamp_duty+gst+demat_tx_charges,2)
 
+def AddPnlToQuarter(p,r):
+    g_t = r['gain_type']
+    q = r['quarter']
+    for f in ['s_value','b_value','pnl']:
+        p[g_t][q][f] +=  locale.atof(r[f])
+
+def GetQuarterOfDate(d):
+    fy = START_DATE.year
+    fy_p1 = END_DATE.year
+    if (d > datetime.date(year=fy,month=4,day=1)) and (d <= datetime.date(year=fy,month=6,day=15)):
+        return 1
+    elif (d > datetime.date(year=fy,month=6,day=15)) and (d <= datetime.date(year=fy,month=9,day=15)):
+        return 2
+    elif (d > datetime.date(year=fy,month=9,day=15)) and (d <= datetime.date(year=fy,month=12,day=15)):
+        return 3
+    elif (d > datetime.date(year=fy_p1,month=3,day=15)) and (d <= datetime.date(year=fy_p1,month=3,day=31)):
+        return 5
+    elif (d > datetime.date(year=fy,month=12,day=15)) and (d <= datetime.date(year=fy_p1,month=3,day=15)):
+        return 4
+
+def GetGainType(b_d,s_d):
+    day_diff = abs((s_d-b_d).days)
+    if day_diff > 365:
+        return LTCG
+    else:
+        return STCG
+
 def ShouldIgnore(r):
     return False
 
 def NormalizeRecord(r):
-#in_fields = [ "Company Name", "Date", "Exchange", "Type", "Price", "Qty", "Brokerage", "Other Charges", "Investment", "Mode", "Broker Name" ]
-    for f in in_float_fields:
+#IN_FIELDS = [ "Company Name", "Date", "Exchange", "Type", "Price", "Qty", "Brokerage", "Other Charges", "Investment", "Mode", "Broker Name" ]
+    for f in IN_FLOAT_FIELDS:
         r[f] = locale.atof(r[f])
 
-    for f in in_int_fields:
+    for f in IN_INT_FIELDS:
         r[f] = locale.atoi(r[f])
 
-    for f in in_date_fields:
+    for f in IN_DATE_FIELDS:
         r[f] = datetime.datetime.strptime(r[f],"%d-%b-%Y").date()
 
     if re.match('buy',r['type'],re.I):
@@ -207,14 +223,14 @@ def SumAllSells(s):
 
     return total
 
-#pnl_fields  = [ "company",  "s_date", "s_qty", "s_price", "s_other_chrg", "s_value", "b_date", "b_qty", "b_price", "b_other_chrg", "b_value","pnl" ]
+#PNL_FIELDS  = [ "company",  "s_date", "s_qty", "s_price", "s_other_chrg", "s_value", "b_date", "b_qty", "b_price", "b_other_chrg", "b_value","pnl" ]
 #  1 Company Name│Date│Exchange│Type│Price│Qty│Brokerage│Other Charges│Investment│Mode│Broker Name
 #  2 GAIL (India)│15-Jun-2022│BSE│SELL│190│123│35.06│32.83│23302.11│Delivery│Angel
 #  3 GAIL (India)│20-Mar-2022││Sell│0│0│0│0│2500│CA│Angel
 
 def WriteDivPnl(cax,h):
     for c in cax:
-        pnl_record = dict.fromkeys(pnl_fields,0)
+        pnl_record = dict.fromkeys(PNL_FIELDS,0)
 
         pnl_record['company'] = c['company']
         pnl_record['s_date'] = c['date']
@@ -262,8 +278,11 @@ def CalculatePnlForScripSells(s_prev,s,b):
 
             out_qty = a_buy['qty'] if a_buy['qty'] <= a_sell['qty'] else a_sell['qty']
 
-            pnl_record = dict.fromkeys(pnl_fields,0)
+            pnl_record = dict.fromkeys(PNL_FIELDS,0)
             pnl_record['company'] = a_sell['company']
+            pnl_record['quarter'] = GetQuarterOfDate(a_sell['date'])
+            pnl_record['gain_type'] = GetGainType(a_sell['date'],a_buy['date'])
+
             pnl_record['s_date'] = a_sell['date']
             pnl_record['s_price'] = a_sell['price']
             pnl_record['s_qty'] = out_qty
@@ -294,11 +313,31 @@ def CalculatePnlForScripSells(s_prev,s,b):
 
     return pnls
 
-with open(in_file) as trade_history, open(out_file,'w') as pnl_file:
-    trade_history_hand = csv.DictReader(trade_history,in_fields, delimiter=',', quotechar='"')
+
+def GetPnlsByQuarterTemplate():
+    pnls_by_q = {}
+    for g_t in [LTCG,STCG]:
+        pnls_by_q[g_t] = {}
+        for q in [1,2,3,4,5]:
+            pnls_by_q[g_t][q] = c_q = dict.fromkeys(PNL_FIELDS,0)
+            c_q['company'] = "Q{0:1d}".format(q)
+            c_q['quarter'] = q
+            c_q['gain_type'] =  g_t
+
+    return pnls_by_q
+
+with open(IN_FILE) as trade_history, open(OUT_FILE,'w') as pnl_file:
+    scrip_wise_buys = {}
+    sells_of_interest = {}
+    sells_till_start_of_fy = {}
+    cax_divs = []
+    cax_not_divs = []
+    pnls_by_q = {}
+
+    trade_history_hand = csv.DictReader(trade_history,IN_FIELDS, delimiter=',', quotechar='"')
     trade_history.readline()
 
-    pnl_hand = csv.DictWriter(pnl_file,pnl_fields, delimiter=',', quotechar='"')
+    pnl_hand = csv.DictWriter(pnl_file,PNL_FIELDS, delimiter=',', quotechar='"')
     pnl_hand.writeheader()
 
     for record in trade_history_hand:
@@ -316,32 +355,43 @@ with open(in_file) as trade_history, open(out_file,'w') as pnl_file:
 
                 scrip_wise_buys[scrip].append(record)
             elif IsSell(record['type']):
-                if scrip not in sells_till_start_of_period:
-                    sells_till_start_of_period[scrip] = []
+                if scrip not in sells_till_start_of_fy:
+                    sells_till_start_of_fy[scrip] = []
                 if scrip not in sells_of_interest:
                     sells_of_interest[scrip] = []
 
-                if record['date']  < start_date:
-                    sells_till_start_of_period[scrip].append(record)
-                elif record['date']  >= start_date and record['date']  <= end_date:
+                if record['date']  < START_DATE:
+                    sells_till_start_of_fy[scrip].append(record)
+                elif record['date']  >= START_DATE and record['date']  <= END_DATE:
                     sells_of_interest[scrip].append(record)
         elif IsCax(record['mode']): # cax
-            if record['date']  >= start_date and record['date']  <= end_date:
+            if record['date']  >= START_DATE and record['date']  <= END_DATE:
                 if record['price'] == 0  and record['qty'] == 0: ## not rights or swaps
-                    cax.append(record)
+                    cax_divs.append(record)
                 else:
                     cax_not_divs.append(record)
+
+    pnls_by_q = GetPnlsByQuarterTemplate()
 
     for scrip in sells_of_interest:
         if len(sells_of_interest[scrip]) == 0: ## no sells for this financial year
             continue
 
-        sells_prev_sorted = sorted(sells_till_start_of_period[scrip], key=lambda r:r['date'])
+        sells_prev_sorted = sorted(sells_till_start_of_fy[scrip], key=lambda r:r['date'])
         sells_of_interest_sorted = sorted(sells_of_interest[scrip], key=lambda r:r['date'])
         scrip_wise_buys_sorted = sorted(scrip_wise_buys[scrip],key=lambda r:r['date'])
         pnls = CalculatePnlForScripSells(sells_prev_sorted,sells_of_interest_sorted,scrip_wise_buys_sorted)
 
-        for r in pnls:
-            pnl_hand.writerow(r) 
+        if len(pnls) > 0:
+            for r in pnls:
+                pnl_hand.writerow(r)
+                AddPnlToQuarter(pnls_by_q,r)
 
-    WriteDivPnl(cax,pnl_hand)
+    for g_t in [LTCG,STCG]:
+        for q in [1,2,3,4,5]:
+            for k in ['s_value', 'b_value', 'pnl']:
+                pnls_by_q[g_t][q][k] = "{0:.2f}".format(pnls_by_q[g_t][q][k])
+            pnl_hand.writerow(pnls_by_q[g_t][q])
+
+    if len(cax_divs) > 0:
+        WriteDivPnl(cax_divs,pnl_hand)
