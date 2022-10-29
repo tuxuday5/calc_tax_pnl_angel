@@ -18,6 +18,8 @@ IN_INT_FIELDS = [ 'qty' ]
 IN_DATE_FIELDS = [ 'date' ]
 
 PNL_FIELDS  = [ 'company', 'gain_type', 'quarter', 's_date', 'b_date', 's_qty', 's_price', 's_other_chrg', 's_value', 'b_qty', 'b_price', 'b_other_chrg', 'b_value','pnl' ]
+DIV_FIELDS = [ 'company', 'quarter', 'div_date', 'div_value']
+
 
 class ValidateFinYear(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
@@ -42,7 +44,8 @@ class ValidateFinYear(argparse.Action):
 
 argParser = argparse.ArgumentParser(description='Calculate Angel Broking pnl based on trades')
 argParser.add_argument('-t','--trades-file',dest='in_file',type=str,required=True,help='Trades file')
-argParser.add_argument('-p','--pnl-file',dest='out_file',type=str,required=True,help='Out/Pnl file')
+argParser.add_argument('-p','--pnl-file',dest='out_file',type=str,required=True,help='File to capture pnl details')
+argParser.add_argument('-d','--div-file',dest='div_file',type=str,required=True,help='File to capture dividend details')
 argParser.add_argument('-y','--fin-year',action=ValidateFinYear,required=True,help='Financial Year as YYYY-YYYYY')
 #in_file='/home/uday/Downloads/Equity_Transaction_till_140722.csv'
 #in_file='/home/uday/lang/python/tax_pnl_calc/tst1.csv'
@@ -53,6 +56,7 @@ argParser.add_argument('-y','--fin-year',action=ValidateFinYear,required=True,he
 parsedArgs = vars(argParser.parse_args())
 IN_FILE = parsedArgs['in_file']
 OUT_FILE = parsedArgs['out_file']
+DIV_FILE = parsedArgs['div_file']
 START_DATE = parsedArgs['start_date']
 END_DATE = parsedArgs['end_date']
 
@@ -228,28 +232,36 @@ def SumAllSells(s):
 #  2 GAIL (India)│15-Jun-2022│BSE│SELL│190│123│35.06│32.83│23302.11│Delivery│Angel
 #  3 GAIL (India)│20-Mar-2022││Sell│0│0│0│0│2500│CA│Angel
 
-def WriteDivPnl(cax,h):
-    for c in cax:
-        pnl_record = dict.fromkeys(PNL_FIELDS,0)
+def WriteDivPnl(cax,d_f):
+    with open(d_f,'w') as div_file:
+        h = csv.DictWriter(div_file,DIV_FIELDS, delimiter=',', quotechar='"')
+        h.writeheader()
 
-        pnl_record['company'] = c['company']
-        pnl_record['s_date'] = c['date']
-        pnl_record['s_price'] = c['investment']
-        pnl_record['s_qty'] = 1
-        pnl_record['s_other_chrg'] = 0
-        pnl_record['s_value']      = c['investment']
+        divs_by_quarter = {}
+        for q in [1,2,3,4,5]:
+            c_q = dict.fromkeys(DIV_FIELDS,0)
+            c_q['company'] = "Q{0:1d}".format(q)
+            c_q['quarter'] = q
+            divs_by_quarter[q] = c_q
 
-        pnl_record['b_date'] = c['date']
-        pnl_record['b_qty'] = 1
-        pnl_record['b_price'] = 0
-        pnl_record['b_other_chrg'] = 0
-        pnl_record['b_value']      = 0
-        pnl_record['pnl']          = pnl_record['s_value']
+        for c in sorted(cax,key=lambda r:r['company']):
+            div_record = dict.fromkeys(DIV_FIELDS,0)
 
-        for k in ( 's_other_chrg', 's_value', 'b_other_chrg', 'b_value', 'pnl'):
-            pnl_record[k] = "{0:.2f}".format(pnl_record[k])
+            div_record['company'] = c['company']
+            div_record['div_date'] = c['date']
+            div_record['div_value'] = c['investment']
+            #div_record['quarter'] = GetQuarterOfMonth(c['date'].month)
+            div_record['quarter'] = GetQuarterOfDate(c['date'])
 
-        h.writerow(pnl_record)
+            divs_by_quarter[div_record['quarter']]['div_value'] += c['investment']
+
+            for k in ['div_value']:
+                div_record[k] = "{0:.2f}".format(div_record[k])
+
+            h.writerow(div_record)
+
+        for k in sorted(divs_by_quarter.keys()):
+            h.writerow(divs_by_quarter[k])
 
 def CalculatePnlForScripSells(s_prev,s,b):
     """ adjust total_sells from s_prev in buys
@@ -326,6 +338,13 @@ def GetPnlsByQuarterTemplate():
 
     return pnls_by_q
 
+def WritePnlsByQuarter(pnls,p_h):
+    for g_t in [LTCG,STCG]:
+        for q in [1,2,3,4,5]:
+            for k in ['s_value', 'b_value', 'pnl']:
+                pnls[g_t][q][k] = "{0:.2f}".format(pnls[g_t][q][k])
+            p_h.writerow(pnls[g_t][q])
+
 with open(IN_FILE) as trade_history, open(OUT_FILE,'w') as pnl_file:
     scrip_wise_buys = {}
     sells_of_interest = {}
@@ -387,11 +406,7 @@ with open(IN_FILE) as trade_history, open(OUT_FILE,'w') as pnl_file:
                 pnl_hand.writerow(r)
                 AddPnlToQuarter(pnls_by_q,r)
 
-    for g_t in [LTCG,STCG]:
-        for q in [1,2,3,4,5]:
-            for k in ['s_value', 'b_value', 'pnl']:
-                pnls_by_q[g_t][q][k] = "{0:.2f}".format(pnls_by_q[g_t][q][k])
-            pnl_hand.writerow(pnls_by_q[g_t][q])
+    WritePnlsByQuarter(pnls_by_q,pnl_hand)
 
     if len(cax_divs) > 0:
-        WriteDivPnl(cax_divs,pnl_hand)
+        WriteDivPnl(cax_divs,DIV_FILE)
